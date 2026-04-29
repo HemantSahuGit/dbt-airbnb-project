@@ -277,6 +277,55 @@ This document contains detailed notes on questions, answers, diagrams, examples,
   - What are the potential downsides of setting the number of threads too high?
   - Does increasing threads always improve `dbt run` performance? Why or why not?
   - How does the structure of your dbt DAG (e.g., wide vs. deep) impact the effectiveness of multiple threads?
+- What is the order of precedence for configurations (e.g., `dbt_project.yml` vs. in-model `config` block)?
+- How would you configure all models in a `staging` subdirectory to be built in a different schema?
+- What is the difference between the `profile` in `dbt_project.yml` and the `profiles.yml` file itself?
+- Why would you want to change the `model-paths` configuration?
+- What is the difference between a dbt model and a materialization?
+- How does the `ref()` function build the project DAG?
+- Why does dbt encourage writing `SELECT` statements rather than DML (e.g., `INSERT`/`UPDATE`)?
+
+
+### Question 7: What is the `dbt_project.yml` file?
+- **Question**: Can you explain the different sections in the `dbt_project.yml` file?
+- **Context**: The `dbt_project.yml` file is the primary configuration file for a dbt project. Understanding its structure is crucial for managing and scaling the project.
+- **Answer**: This YAML file defines the configuration for your entire dbt project. Here's a breakdown of its key sections:
+  1.  **`name`**: The unique name for your dbt project. It should use lowercase letters and underscores. This name is used when your project is installed as a package in another dbt project.
+  2.  **`version`**: The version of your dbt project, which is useful for package management.
+  3.  **`profile`**: This crucial setting links your project to a specific connection profile defined in your `profiles.yml` file. It tells dbt which database credentials and settings to use.
+  4.  **`...-paths`**: These keys (`model-paths`, `seed-paths`, `test-paths`, etc.) define the directory structure of your project. They tell dbt where to find specific file types. You typically don't need to change the defaults.
+  5.  **`clean-targets`**: A list of directories that will be removed when you run the `dbt clean` command. This is used to delete compiled artifacts (`target/`) and installed packages (`dbt_packages/`).
+  6.  **`models`**: A powerful section for configuring how your models are built. You can apply configurations to all models in your project or to specific subdirectories. This is where you can set default materializations (e.g., `view`, `table`), schemas, tags, and more. Configurations here can be overridden by a `config()` block within an individual model file.
+- **Examples**:
+  - **Basic `dbt_project.yml`**:
+    ```yaml
+    name: 'aws_dbt_snowflake_airbnb_project'
+    version: '1.0.0'
+    profile: 'aws_dbt_snowflake_airbnb_project'
+
+    model-paths: ["models"]
+    # ... other paths
+
+    clean-targets:
+      - "target"
+      - "dbt_packages"
+    ```
+  - **Advanced Model Configuration**: This example configures all models in the `staging` directory to be created in a `staging` schema and materialized as views.
+    ```yaml
+    # in dbt_project.yml
+    models:
+      aws_dbt_snowflake_airbnb_project: # Project name
+        staging: # Directory name under models/
+          +schema: staging # Creates models in 'your_target_schema_staging'
+          +materialized: view
+        marts:
+          +materialized: table
+    ```
+- **Interview Cross-Questions**:
+  - What is the order of precedence for configurations (e.g., `dbt_project.yml` vs. in-model `config` block)?
+  - How would you configure all models in a `staging` subdirectory to be built in a different schema?
+  - What is the difference between the `profile` in `dbt_project.yml` and the `profiles.yml` file itself?
+  - Why would you want to change the `model-paths` configuration?
 
 ### Template for Each Question
 - **Question**: [The question asked]
@@ -289,6 +338,50 @@ This document contains detailed notes on questions, answers, diagrams, examples,
 ## Key Concepts Covered
 - Snowflake Storage Integration
 - External Stages
+- Git ignore behavior and secret protection
+- Removing sensitive files from git history
+
+### Question 8: Why were my secrets exposed even though I added profiles.yml in the .gitignore?
+- **Question**: Why did `profiles.yml` still expose secrets even after adding it to `.gitignore`?
+- **Context**: You added `profiles.yml` to `.gitignore`, but the secrets were still visible in the repository or remote history.
+- **Answer**: `.gitignore` only prevents new, untracked files from being added to Git. It does not remove or stop tracking a file that was already committed earlier.
+  1. **Already tracked files remain tracked**: If `profiles.yml` was committed before adding it to `.gitignore`, Git will continue to track it until you remove it from the index.
+  2. **`.gitignore` is not a security control**: It is a convenience for ignoring local files, not an enforcement mechanism for secrets that already exist in history.
+  3. **Path/root issues**: If the actual file is not in the repository root or is stored elsewhere (for example, `~/.dbt/profiles.yml`), the ignore rule may not apply as expected.
+  4. **Remote history still contains it**: Even after removing the file locally, the secret can remain in the remote repository history unless you rewrite history.
+- **Diagram**:
+  ```mermaid
+  flowchart LR
+      A[profiles.yml committed first] --> B[Git is tracking it]
+      C[Add profiles.yml to .gitignore later] --> D[No effect on tracked file]
+      B --> E[Secrets remain in repo history]
+      D --> E
+      style A fill:#ffccbc
+      style C fill:#ffe0b2
+      style E fill:#f8bbd0
+  ```
+- **Examples**:
+  - Remove the file from the index but keep it locally:
+    ```bash
+    git rm --cached profiles.yml
+    git add .gitignore
+    git commit -m "Remove profiles.yml from repository and ignore it"
+    git push origin main
+    ```
+  - If the file has already been pushed, rotate the secrets immediately and consider rewriting history:
+    ```bash
+    # Rewrite history only if absolutely necessary and with care
+    git filter-branch --force --index-filter 'git rm --cached --ignore-unmatch profiles.yml' --prune-empty -- --all
+    git push --force origin main
+    ```
+  - Best practice: keep sensitive credentials in `~/.dbt/profiles.yml`, environment variables, or a secrets manager instead of committed repo files.
+- **Interview Cross-Questions**:
+  - Why does `.gitignore` not protect files already committed?
+  - What steps do you take after accidentally committing a secret to Git?
+  - How do you remove sensitive data from Git history safely?
+  - What are better alternatives to storing credentials in `profiles.yml`?
+  - How do you enforce secret management in a team project?
+
 - Data Loading with COPY INTO
 - AWS S3 Integration
 - dbt Sources
@@ -299,6 +392,8 @@ This document contains detailed notes on questions, answers, diagrams, examples,
 - dbt Adapters
 - Git Version Control
 - dbt Threads (Parallelism)
+- dbt Project Configuration (`dbt_project.yml`)
+- dbt Models
 
 ## Diagrams
 - **S3 to Snowflake Data Load**

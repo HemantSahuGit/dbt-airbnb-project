@@ -1,0 +1,1 @@
+select * from airbnb.staging.listings;
