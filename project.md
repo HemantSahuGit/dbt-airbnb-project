@@ -196,6 +196,88 @@ This document contains detailed notes on questions, answers, diagrams, examples,
   - What is the difference between dbt Core and a dbt adapter?
   - Where are connection credentials stored when using a dbt adapter locally? (`profiles.yml`)
 
+### Question 5: What are the most used Git commands?
+- **Question**: What are the most commonly used Git commands in a typical development workflow?
+- **Context**: Since dbt projects are code-based, version control using Git is an essential skill for managing changes, collaborating with teammates, and deploying to production.
+- **Answer**: The most common Git commands follow the standard lifecycle of creating branches, making changes, staging them, committing, and syncing with a remote repository.
+  1. **Setup & Info**: `git clone` (copy a repo), `git status` (check current state), `git log` (view history).
+  2. **Branching**: `git checkout -b <branch-name>` (create and switch to a new branch) or `git branch` (list branches).
+  3. **Staging**: `git add <file>` or `git add .` (move changes from working directory to staging area).
+  4. **Committing**: `git commit -m "message"` (save staged changes to local repository).
+  5. **Syncing**: `git pull` (fetch and merge from remote) and `git push origin <branch-name>` (send local commits to remote).
+- **Diagram**:
+  ```mermaid
+  graph LR
+      A[Working Directory] -- "git add" --> B[Staging Area]
+      B -- "git commit" --> C[Local Repository]
+      C -- "git push" --> D[(Remote Repository)]
+      D -- "git pull" --> A
+      
+      style A fill:#f9f2f4
+      style B fill:#fff9c4
+      style C fill:#e1f5fe
+      style D fill:#c8e6c9
+  ```
+- **Examples**:
+  - **Basic Workflow Example**:
+    ```bash
+    git checkout -b feature/add-stg-listings
+    # ... make changes to models/staging/stg_listings.sql ...
+    git status
+    git add models/staging/stg_listings.sql
+    git commit -m "feat: add staging model for listings"
+    git push origin feature/add-stg-listings
+    ```
+- **Interview Cross-Questions**:
+  - What is the difference between `git fetch` and `git pull`?
+  - How do you resolve a merge conflict?
+  - What is the difference between `git merge` and `git rebase`?
+  - What is the purpose of `.gitignore` in a dbt project?
+  - How do you undo a commit that hasn't been pushed yet?
+
+### Question 6: What are 'threads' in dbt?
+- **Question**: What does the 'threads' setting mean when you initialize a dbt project?
+- **Context**: During the `dbt init` process, you are prompted to set a number for `threads`. This is a core performance configuration for dbt.
+- **Answer**: The `threads` setting in your `profiles.yml` file determines the maximum number of concurrent operations (like running models) that dbt can execute at once. It controls the level of parallelism.
+  1.  **Parallel Execution**: Each thread opens a separate connection to your data warehouse. If you set `threads: 4`, dbt can run up to four independent models simultaneously.
+  2.  **Performance Boost**: This is one of the primary ways to speed up a dbt project. dbt analyzes your project's Directed Acyclic Graph (DAG) to find models that don't depend on each other and runs them in parallel across the available threads.
+  3.  **Resource Management**: The optimal number of threads depends on your data warehouse's capacity to handle concurrent queries and the structure of your dbt project. For powerful cloud warehouses like Snowflake, a starting value of 4 or 8 is common.
+- **Diagram**:
+  ```mermaid
+  graph TD
+      subgraph "dbt Project DAG"
+          A[stg_listings]
+          B[stg_reviews]
+          C[stg_hosts]
+      end
+
+      subgraph "Execution with 4 Threads"
+          A & B & C -- "Run in Parallel" --> D[int_listings_joined]
+      end
+
+      subgraph "Execution with 1 Thread"
+          A_seq[stg_listings] --> B_seq[stg_reviews] --> C_seq[stg_hosts] -- "Run Sequentially" --> D_seq[int_listings_joined]
+      end
+  ```
+- **Examples**:
+  - **Configuration (`profiles.yml`)**:
+    ```yaml
+    my_airbnb_profile:
+      target: dev
+      outputs:
+        dev:
+          type: snowflake
+          threads: 4 # dbt will use up to 4 parallel connections
+          # ... other connection details
+    ```
+  - **Command Line Override**: You can temporarily change the thread count for a specific run.
+    `dbt run --threads 8`
+- **Interview Cross-Questions**:
+  - How would you determine the optimal number of threads for a project?
+  - What are the potential downsides of setting the number of threads too high?
+  - Does increasing threads always improve `dbt run` performance? Why or why not?
+  - How does the structure of your dbt DAG (e.g., wide vs. deep) impact the effectiveness of multiple threads?
+
 ### Template for Each Question
 - **Question**: [The question asked]
 - **Context**: [Any background or context provided]
@@ -215,6 +297,8 @@ This document contains detailed notes on questions, answers, diagrams, examples,
 - dbt Models & Materializations
 - ELT vs ETL
 - dbt Adapters
+- Git Version Control
+- dbt Threads (Parallelism)
 
 ## Diagrams
 - **S3 to Snowflake Data Load**
