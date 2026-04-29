@@ -1,0 +1,13 @@
+aws_dbt_snowflake_airbnb_project:
+  outputs:
+    dev:
+      account: KSAOLIK-AM19789
+      database: AIRBNB
+      password: Hemant@09061998
+      role: ACCOUNTADMIN
+      schema: STAGING
+      threads: 1
+      type: snowflake
+      user: HEMANTSAHU9357
+      warehouse: COMPUTE_WH
+  target: dev
