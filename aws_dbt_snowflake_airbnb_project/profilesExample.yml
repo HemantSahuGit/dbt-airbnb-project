@@ -1,0 +1,13 @@
+aws_dbt_snowflake_airbnb_project:
+  outputs:
+    dev:
+      account: 
+      database: 
+      password: 
+      role: 
+      schema: 
+      threads: 1
+      type: 
+      user: 
+      warehouse: 
+  target: dev
