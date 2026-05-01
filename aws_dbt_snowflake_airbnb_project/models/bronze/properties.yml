@@ -1,0 +1,14 @@
+# This is a properties file for the models in the bronze layer of the Airbnb project.
+# It specifies that all models in this layer should be materialized as views and should be stored in the 'bronze' schema. This configuration will be applied to all models in the bronze layer
+# For more information on configuring models, see the dbt documentation: https://docs.getdbt.com/docs/configuring-models
+ #-----------------------------#
+#models:
+#  - name: bronze_bookings
+#    config:
+#      materialized: table
+#  - name: bronze_hosts
+#    config:
+#      materialized: table
+#  - name: bronze_listings
+#    config:
+#     materialized: table
