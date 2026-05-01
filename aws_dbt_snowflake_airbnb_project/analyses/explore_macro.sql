@@ -1,0 +1,1 @@
+select {{ multiply(5, 1.011) }}
