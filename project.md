@@ -1116,3 +1116,1475 @@ This section collects all cross-questions for easy review.
   - How do you implement surrogate key generation across different databases?
   - When would you use loops in Jinja for column generation?
   - How do you conditionally include sensitive data based on environment?
+
+### Question 16: What is incremental load and how does it work?
+- **Question**: What is incremental load, how does it work?
+- **Context**: Explaining incremental materialization in dbt for efficient production data pipelines.
+- **Answer**:
+  - **Incremental load** is a dbt materialization strategy where only new or changed rows are processed during a run, instead of rebuilding the entire table every time. This is ideal for large datasets and production workloads where full refreshes would be too slow or expensive.
+  - **How it works**:
+    1. dbt evaluates the model and identifies whether it is being executed in incremental mode (using `is_incremental()`).
+    2. If the target table does not exist, dbt creates it from the full SQL query.
+    3. If the target exists, dbt runs only the incremental SQL block and merges new or updated rows into the existing table.
+    4. The incremental condition is usually based on a timestamp column, unique key, or a change data capture (CDC) logic.
+  - **Core elements**:
+    - `{{ config(materialized='incremental', unique_key='id') }}`: Marks the model as incremental.
+    - `is_incremental()`: A Jinja test to execute incremental-only SQL.
+    - `{{ this }}`: References the target table for comparing existing rows.
+    - `unique_key`: Defines how to match source rows to existing rows.
+  - **Benefits**:
+    - Faster runs on large tables.
+    - Lower compute and storage costs.
+    - Better for streaming or high-frequency data ingestion.
+  - **Typical pattern**:
+    ```sql
+    {{ config(materialized='incremental', unique_key='id') }}
+
+    SELECT id, name, price, updated_at
+    FROM {{ source('airbnb_raw', 'listings') }}
+    {% if is_incremental() %}
+      WHERE updated_at > (SELECT MAX(updated_at) FROM {{ this }})
+    {% endif %}
+    ```
+  - **What happens during the first run**: dbt treats the model as a full load and creates the table.
+  - **What happens on subsequent runs**: dbt executes only the incremental branch and inserts/updates rows.
+  - **Advanced incremental patterns**:
+    - Use `MERGE` for source systems that support it (Snowflake, BigQuery, Redshift).
+    - Combine incremental logic with `dbt_utils.star` to select new columns automatically.
+    - Add `WHERE` filters for deleted or changed records.
+    - Use `vars` and config flags to switch between `full_refresh` and incremental mode.
+  - **Interview Cross-Questions**:
+    - What is the difference between incremental and full-refresh models in dbt?
+    - How does dbt know whether to run incremental logic or full-load logic?
+    - Why is `unique_key` important for incremental models?
+    - When might you choose to do a full refresh instead of incremental?
+    - How do you handle late-arriving data in an incremental model?
+
+### Question 17: Explanation of bronze_bookings.sql incremental model
+- **Question**: What does the incremental load code in bronze_bookings.sql do?
+- **Context**: Real-world example of an incremental model implementation in the Airbnb project.
+- **Code Snippet**:
+  ```sql
+  {% set incremental_column = 'CREATED_AT' %}
+
+  select *
+  from {{ source('staging', 'bookings') }}
+
+  {% if is_incremental() %}
+  where {{ incremental_column }} >= (
+      select coalesce(max({{ incremental_column }}), cast('1900-01-01' as timestamp))
+      from {{ this }}
+  )
+  {% endif %}
+  ```
+- **Line-by-line breakdown**:
+  - **Line 1**: `{% set incremental_column = 'CREATED_AT' %}` - Defines a Jinja variable to store the column name used for incremental filtering. Using a variable makes it reusable if you need to reference it multiple times.
+  - **Line 3-4**: `select * from {{ source('staging', 'bookings') }}` - Selects all columns from the raw bookings source table defined in YAML sources.
+  - **Line 6**: `{% if is_incremental() %}` - Checks if this model is running in incremental mode. This block only executes on subsequent runs (not the first full load).
+  - **Line 7-10**: The WHERE clause filters rows where `CREATED_AT >= max(CREATED_AT)` from the existing table. The subquery:
+    - Gets the maximum `CREATED_AT` from the existing table `{{ this }}` (the target table being built).
+    - Uses `COALESCE` to default to '1900-01-01' if the table is empty (first run).
+    - Only new or recently modified bookings are loaded.
+- **What happens**:
+  - **First run**: `is_incremental()` returns false, so the WHERE clause is skipped. All bookings are loaded into the table.
+  - **Second run**: `is_incremental()` returns true. Only bookings created/modified after the max existing CREATED_AT are loaded and appended.
+- **Why this pattern**:
+  - **Efficiency**: Instead of reprocessing the entire bookings table, only new rows are fetched from the source.
+  - **Cost-effective**: Reduces compute on Snowflake and data transfer from S3.
+  - **Idempotency**: Safe to re-run; duplicate keys are handled by Snowflake's insert behavior or merge logic.
+- **Potential enhancement**:
+  - Add `unique_key='booking_id'` in the config to enable merge-based updates if bookings can be modified (not just inserted).
+  - Add `on_schema_change='fail'` to prevent silent schema mismatches.
+  ```sql
+  {{ config(materialized='incremental', unique_key='booking_id', on_schema_change='fail') }}
+  ```
+- **Interview Cross-Questions**:
+  - Why use a Jinja variable for the incremental column instead of hardcoding it?
+  - What happens if CREATED_AT has NULL values in the source?
+  - How would you handle late-arriving data (rows inserted with old timestamps)?
+  - What's the difference between this append-only pattern and a merge-based incremental?
+  - How would you test that incremental logic is working correctly?
+
+### Question 18: What does materialized = incremental do and how to configure it in dbt_project.yml?
+- **Question**: What does `materialized = incremental` do? Can we configure it in dbt_project.yml?
+- **Context**: Understanding incremental materialization configuration at project and folder levels for consistent dbt project setup.
+- **Answer**:
+  - **What `materialized = incremental` does**: It tells dbt to treat a model as incremental, meaning:
+    1. On the first run, dbt creates the full table from the entire source dataset.
+    2. On subsequent runs, dbt only processes new or changed rows based on your incremental logic (using `is_incremental()`).
+    3. It merges or appends only new rows instead of dropping and recreating the table.
+    4. Saves time, compute costs, and storage for large datasets.
+  - **Yes, you can configure it in dbt_project.yml** at different levels:
+    1. **Project-level**: All models in the project default to incremental.
+    2. **Folder-level**: All models in a specific folder (e.g., bronze/) default to incremental.
+    3. **Model-level**: Individual models override project/folder settings (highest precedence).
+- **Configuration Examples in dbt_project.yml**:
+  - **Project-level (all models incremental)**:
+    ```yaml
+    version: '1.0.0'
+    name: 'airbnb_project'
+    
+    models:
+      airbnb_project:
+        materialized: incremental
+    ```
+  - **Folder-level (bronze folder models incremental)**:
+    ```yaml
+    version: '1.0.0'
+    name: 'airbnb_project'
+    
+    models:
+      airbnb_project:
+        bronze:
+          materialized: incremental
+        silver:
+          materialized: table
+        gold:
+          materialized: view
+    ```
+  - **With additional incremental configs**:
+    ```yaml
+    models:
+      airbnb_project:
+        bronze:
+          materialized: incremental
+          unique_key: id
+          on_schema_change: fail
+        
+        silver:
+          materialized: table
+    ```
+- **Key incremental configurations**:
+  - `materialized: incremental` - Marks the model as incremental.
+  - `unique_key: [id, source]` - Defines how to match rows for merge/upsert (can be single or multiple columns).
+  - `on_schema_change: fail|ignore|append_new_columns` - How to handle schema changes in incremental runs.
+  - `incremental_strategy: append|delete+insert|merge` - How to insert new rows (database-specific).
+- **Precedence order** (highest to lowest):
+  1. **Model-level config** (in model file with `{{ config(...) }}`).
+  2. **Folder-level config** (in dbt_project.yml under folder name).
+  3. **Project-level config** (in dbt_project.yml under models).
+  4. **dbt defaults** (table materialization if nothing specified).
+- **Real-world example from dbt_project.yml**:
+  ```yaml
+  name: 'airbnb_project'
+  version: '1.0.0'
+  
+  models:
+    airbnb_project:
+      # All bronze models are incremental with CREATED_AT as the natural key
+      bronze:
+        materialized: incremental
+        unique_key: id
+        
+        # Specific model override
+        bronze_bookings:
+          materialized: incremental
+          unique_key: booking_id
+          
+      # Silver models are tables (no incremental)
+      silver:
+        materialized: table
+      
+      # Gold models are views
+      gold:
+        materialized: view
+  ```
+- **When NOT to use incremental in dbt_project.yml**:
+  - For small tables that rebuild quickly.
+  - When you need full refreshes for debugging or auditing.
+  - For models that depend on other incrementals (can cause inconsistencies).
+- **Interview Cross-Questions**:
+  - What's the difference between folder-level and model-level incremental configuration?
+  - How does dbt know which materialization strategy to use when multiple levels are defined?
+  - Can you override a project-level incremental config at the model level?
+  - What happens if you don't specify `unique_key` in an incremental model?
+  - Why might you choose `delete+insert` over `append` strategy?
+
+### Question 19: What are the different modes of incrementing data in dbt?
+- **Question**: What are the different modes of incrementing data in dbt?
+- **Context**: Understanding dbt incremental strategies and the ways dbt applies new row processing in production.
+- **Answer**:
+  - dbt incremental models can use different strategies to add or update rows in the target table. These are configured with `incremental_strategy` and/or by the target adapter's default behavior.
+  - **Common incremental strategies**:
+    1. **append** (default for many adapters)
+       - dbt simply inserts the new rows produced by the incremental query into the target table.
+       - No deduplication or merge logic is applied automatically.
+       - Use this when source data is append-only and there are no updates to existing rows.
+    2. **merge**
+       - dbt uses a SQL `MERGE` statement to update existing rows and insert new rows.
+       - Requires a `unique_key` to determine how source rows match target rows.
+       - Best for slowly changing dimensions, update-capable source records, or when upserts are needed.
+       - Supported on adapters like Snowflake, BigQuery, Redshift, SQL Server, and others.
+    3. **delete+insert**
+       - dbt deletes rows from the target table that match the incremental condition and then inserts the new rows.
+       - Useful when source rows can change and merge is not supported, but you still want a deterministic replace of the changed range.
+       - Often used with timestamp-based filters or partition predicates.
+  - **Adapter-specific behaviors**:
+    - Some platforms default to `append` if no `incremental_strategy` is specified.
+    - Snowflake and BigQuery support `merge`, while older adapters may only support `append` or `delete+insert`.
+  - **Configuration example**:
+    ```sql
+    {{ config(
+      materialized='incremental',
+      unique_key='id',
+      incremental_strategy='merge'
+    ) }}
+    ```
+  - **When to choose each mode**:
+    - `append`: use for append-only log or event tables with no updates.
+    - `merge`: use when records can change and you need upsert behavior.
+    - `delete+insert`: use when merge is unavailable or when you want to rewrite a partition or key range.
+  - **Additional concepts**:
+    - `is_incremental()`: controls whether the incremental filter or merge source conditions run.
+    - `unique_key`: required for `merge` and helpful for ensuring idempotent behavior.
+    - `full_refresh`: can still be used to rebuild incremental models from scratch when needed.
+  - **Interview Cross-Questions**:
+    - What is the difference between `append` and `merge` incremental strategies?
+    - When would you use `delete+insert` instead of `merge`?
+    - How does `unique_key` influence incremental behavior?
+    - What are the risks of using append-only incremental loads?
+    - How do you handle schema changes in incremental models?" 
+
+### Question 20: How to add an "updated at" timestamp in dbt models?
+- **Question**: I want an "updated at" timestamp to know when it was last updated, how to do that?
+- **Context**: Adding audit timestamps to track when records were last processed or updated in dbt models, especially useful for incremental loads and data lineage.
+- **Answer**:
+  - In dbt, you can add timestamp columns to track when records were last updated. This is commonly done for audit trails, incremental load tracking, and data freshness monitoring.
+  - **Common approaches**:
+    1. **Add a static timestamp column** in your SELECT statement.
+    2. **Use dbt variables** like `run_started_at` or `invocation_id` for run-specific tracking.
+    3. **Conditional timestamps** based on incremental vs full refresh.
+    4. **Database-specific functions** for current timestamp.
+- **Examples**:
+  - **Basic updated_at column** (Snowflake example):
+    ```sql
+    SELECT
+      id,
+      name,
+      price,
+      CURRENT_TIMESTAMP as updated_at
+    FROM {{ source('airbnb_raw', 'listings') }}
+    ```
+  - **Incremental-aware updated_at** (only update timestamp on incremental runs):
+    ```sql
+    SELECT
+      id,
+      name,
+      price,
+      {% if is_incremental() %}
+        CURRENT_TIMESTAMP as updated_at
+      {% else %}
+        NULL as updated_at
+      {% endif %}
+    FROM {{ source('airbnb_raw', 'listings') }}
+    ```
+  - **Using dbt run variables**:
+    ```sql
+    SELECT
+      id,
+      name,
+      price,
+      '{{ run_started_at }}'::timestamp as dbt_run_started_at,
+      '{{ invocation_id }}' as dbt_invocation_id
+    FROM {{ source('airbnb_raw', 'listings') }}
+    ```
+  - **For incremental models with merge strategy** (update existing records):
+    ```sql
+    {{ config(materialized='incremental', unique_key='id', incremental_strategy='merge') }}
+
+    SELECT
+      id,
+      name,
+      price,
+      CURRENT_TIMESTAMP as updated_at
+    FROM {{ source('airbnb_raw', 'listings') }}
+    {% if is_incremental() %}
+      WHERE updated_at > (SELECT MAX(updated_at) FROM {{ this }})
+    {% endif %}
+    ```
+  - **Preserve existing timestamps on merge** (don't overwrite):
+    ```sql
+    {{ config(materialized='incremental', unique_key='id', incremental_strategy='merge') }}
+
+    SELECT
+      s.id,
+      COALESCE(t.name, s.name) as name,
+      COALESCE(t.price, s.price) as price,
+      CASE
+        WHEN t.id IS NULL THEN CURRENT_TIMESTAMP  -- New record
+        ELSE t.updated_at  -- Preserve existing timestamp
+      END as updated_at
+    FROM {{ source('airbnb_raw', 'listings') }} s
+    LEFT JOIN {{ this }} t ON s.id = t.id
+    ```
+- **Database-specific timestamp functions**:
+  - **Snowflake**: `CURRENT_TIMESTAMP`, `SYSDATE`, `CURRENT_TIMESTAMP()`
+  - **BigQuery**: `CURRENT_TIMESTAMP()`, `CURRENT_DATETIME()`
+  - **Redshift**: `GETDATE()`, `CURRENT_TIMESTAMP`
+  - **PostgreSQL**: `NOW()`, `CURRENT_TIMESTAMP`
+- **Best practices**:
+  - Use consistent naming: `updated_at`, `dbt_updated_at`, `last_modified_at`
+  - Consider timezone handling: use UTC for consistency across environments
+  - For incremental models, decide if you want to update timestamps only on changes or always
+  - Use `invocation_id` for debugging which dbt run processed the record
+- **Interview Cross-Questions**:
+  - What's the difference between `run_started_at` and `CURRENT_TIMESTAMP`?
+  - How would you handle timezone differences in updated_at timestamps?
+  - When should you preserve existing timestamps vs always updating them?
+  - How do you use `invocation_id` for debugging data issues?
+  - What's the impact of adding timestamps to large incremental tables?
+
+### Question 21: Why isn't my new column appearing in incremental models?
+- **Question**: The additional column I added (`snowflake_load_time`) is not getting reflected in Snowflake for my incremental model.
+- **Context**: Troubleshooting schema changes in incremental dbt models, especially when adding new columns to existing incremental tables.
+- **Code Example**:
+  ```sql
+  {{ config(materialized='incremental',
+        unique_key='BOOKING_ID',
+        incremental_strategy='merge') }}
+
+  select *,
+          current_timestamp() as snowflake_load_time
+  from {{ source('staging', 'bookings') }}
+
+  {% if is_incremental() %}
+  where CREATED_AT >= (
+      select coalesce(max(CREATED_AT), cast('1900-01-01' as timestamp))
+      from {{ this }}
+  )
+  {% endif %}
+  ```
+- **Root Cause**:
+  - **Incremental models don't automatically add new columns** during incremental runs. dbt only processes the rows that match your incremental condition, but doesn't modify the table schema.
+  - When using `incremental_strategy='merge'`, dbt generates a MERGE statement that only updates existing columns. New columns are ignored unless the table schema is updated.
+- **Solutions**:
+  1. **Full refresh** (rebuilds the entire table):
+     ```bash
+     dbt run --models bronze_bookings --full-refresh
+     ```
+     - This drops and recreates the table with the new column.
+     - Use when you want to start fresh or when schema changes are significant.
+     
+  2. **Configure schema change handling**:
+     ```sql
+     {{ config(materialized='incremental',
+           unique_key='BOOKING_ID',
+           incremental_strategy='merge',
+           on_schema_change='append_new_columns') }}
+     ```
+     - `append_new_columns`: Automatically adds new columns to the table during incremental runs.
+     - `fail`: Fails the run if schema changes are detected (default behavior).
+     - `ignore`: Ignores schema changes (not recommended).
+     
+  3. **Manual table alteration** (if you can't do full refresh):
+     - First, add the column manually in Snowflake:
+       ```sql
+       ALTER TABLE your_database.your_schema.bronze_bookings 
+       ADD COLUMN snowflake_load_time TIMESTAMP;
+       ```
+     - Then run your incremental model - it will populate the new column for new/updated rows.
+     
+  4. **For append-only incremental** (if merge isn't needed):
+     - Switch to `incremental_strategy='append'` if you don't need upserts.
+     - New columns will be added automatically since dbt just inserts new rows.
+- **Best Practices**:
+  - **Always test schema changes** in development before production.
+  - **Use `on_schema_change='append_new_columns'`** for incremental models that frequently add columns.
+  - **Document schema changes** in your dbt project for team awareness.
+  - **Consider full refresh frequency** - don't do it too often in production.
+- **Interview Cross-Questions**:
+  - What does `on_schema_change` do in incremental models?
+  - When should you use `--full-refresh` vs `on_schema_change`?
+  - How does dbt handle schema changes differently in merge vs append strategies?
+  - What are the risks of frequent full refreshes in production?
+  - How would you handle removing columns from incremental models?
+
+### Question 21: Why isn't my new column appearing in incremental models? (Continued)
+- **Additional Solution - Manual Table Drop**:
+  - **What you did**: Dropped the table in Snowflake manually, then ran `dbt run`.
+  - **Why it works**: When the target table doesn't exist, dbt treats it as a "first run" and creates the table with the full schema from your model, including new columns.
+  - **Result**: The `snowflake_load_time` column should now appear in your table.
+  - **Note**: This is essentially a manual full refresh. The table will be rebuilt from scratch with all current data from your source.
+- **Prevention for Future**:
+  - Add `on_schema_change='append_new_columns'` to your config to handle new columns automatically:
+    ```sql
+    {{ config(materialized='incremental',
+          unique_key='BOOKING_ID',
+          incremental_strategy='merge',
+          on_schema_change='append_new_columns') }}
+    ```
+  - This way, you won't need to drop tables or do full refreshes for schema changes.
+
+### Question 22: What is upsert and how is it implemented in dbt?
+- **Question**: What is upsert? How is it implemented in dbt?
+- **Context**: Understanding upsert semantics for incremental loading and merge operations in dbt.
+- **Answer**:
+  - **Upsert** is a combination of "update" and "insert". It means: if a record already exists, update it; if it does not exist, insert it.
+  - **Why upsert matters**: It ensures that your target table reflects the latest state from the source without creating duplicates for existing keys.
+- **dbt implementation**:
+  - In dbt, upsert behavior is usually implemented with `incremental_strategy='merge'` and a `unique_key`.
+  - dbt generates a `MERGE` statement for supported adapters like Snowflake, BigQuery, Redshift, SQL Server, and others.
+  - The `unique_key` tells dbt how to match source rows to target rows.
+- **Example**:
+  ```sql
+  {{ config(
+      materialized='incremental',
+      unique_key='BOOKING_ID',
+      incremental_strategy='merge'
+  ) }}
+
+  SELECT
+    BOOKING_ID,
+    GUEST_ID,
+    CREATED_AT,
+    STATUS,
+    CURRENT_TIMESTAMP() as snowflake_load_time
+  FROM {{ source('staging', 'bookings') }}
+  {% if is_incremental() %}
+    WHERE CREATED_AT >= (
+      SELECT COALESCE(MAX(CREATED_AT), CAST('1900-01-01' AS TIMESTAMP))
+      FROM {{ this }}
+    )
+  {% endif %}
+  ```
+  - This model will insert new rows and update existing rows based on `BOOKING_ID`.
+- **How dbt generates merge logic**:
+  - dbt uses the selected adapter to create a database-specific `MERGE` statement.
+  - The source rows are the incremental result set, and the target is `{{ this }}`.
+  - On match, dbt updates the target columns; on no match, dbt inserts the new row.
+- **Best practice**:
+  - Use a stable and unique `unique_key` field.
+  - Add `on_schema_change='append_new_columns'` if the schema may evolve.
+  - Validate that your source filter only produces rows that should be inserted/updated.
+- **Interview Cross-Questions**:
+  - What is the difference between insert, update, and upsert?
+  - Why is `unique_key` important for merge-based incremental models?
+  - How does dbt handle upsert on adapters that do not support merge?
+  - When would you use append strategy instead of merge/upsert?
+  - How do you test that your upsert logic is correctly updating existing rows?
+
+### Question 23: Is this Jinja macro correct?
+- **Question**: Is the `tag(col)` macro correct?
+- **Context**: Reviewing and improving a custom Jinja macro for categorizing values in dbt.
+- **Code Review**:
+  ```jinja
+  {% macro tag(col)%}
+      {% if int(col) < 100%}
+          'Low'
+      {% elif int(col) < 200%}
+          'Medium'
+      {% else %}
+          'High'
+      {% endif %}
+  {% endmacro%}
+  ```
+- **Analysis**:
+  - **Syntax**: The macro syntax is mostly correct. The logic categorizes values: < 100 = 'Low', 100-199 = 'Medium', >= 200 = 'High'.
+  - **Potential Issues**:
+    1. **NULL handling**: If `col` is NULL, `int(col)` will fail. Add null check.
+    2. **Type conversion**: `int(col)` assumes `col` is a string/number. If `col` is already numeric, this works; if string, it converts.
+    3. **Error handling**: No protection against non-numeric values.
+- **Improved Version**:
+  ```jinja
+  {% macro tag(col) %}
+      {% if col is none %}
+          NULL
+      {% elif col | int < 100 %}
+          'Low'
+      {% elif col | int < 200 %}
+          'Medium'
+      {% else %}
+          'High'
+      {% endif %}
+  {% endmacro %}
+  ```
+  - **Changes**:
+    - Added `{% if col is none %}` to handle NULL values.
+    - Used `col | int` (Jinja filter) instead of `int(col)` for safer conversion.
+    - Returns `NULL` for null inputs instead of failing.
+- **Usage Example**:
+  ```sql
+  SELECT
+    booking_id,
+    price,
+    {{ tag('price') }} as price_category
+  FROM {{ ref('bronze_bookings') }}
+  ```
+  - **Note**: When calling the macro, pass the column name as a string `'price'`, not as a variable `price`.
+- **Testing the Macro**:
+  - Create a simple test model:
+    ```sql
+    SELECT
+      {{ tag('100') }} as test_100,  -- Should return 'Medium'
+      {{ tag('50') }} as test_50,    -- Should return 'Low'
+      {{ tag('250') }} as test_250   -- Should return 'High'
+    ```
+  - Run `dbt compile` to check for syntax errors.
+- **Interview Cross-Questions**:
+  - How do you handle NULL values in Jinja macros?
+  - What's the difference between `int(col)` and `col | int` in Jinja?
+  - How do you test custom macros in dbt?
+  - When should you use macros vs case statements in SQL?
+  - How do you handle type conversion errors in Jinja?
+
+### Question 24: Does Jinja convert strings to 0 when casting to integer?
+- **Question**: Do Jinja converts strings to 0 while casting to integer?
+- **Context**: Understanding type conversion behavior in Jinja, especially when using the `| int` filter with invalid or non-numeric strings.
+- **Answer**:
+  - **Short answer**: No, Jinja does NOT silently convert strings to 0. It depends on the string content.
+  - **Behavior**:
+    - **Numeric strings** (e.g., '100', '50'): Converted successfully to integer. Result: `100`, `50`.
+    - **Non-numeric strings** (e.g., 'abc', 'price'): Jinja raises an error or returns a default value depending on the filter.
+    - **Empty string** (''): Typically converts to 0 or raises an error.
+    - **Mixed strings** (e.g., '100abc'): Typically fails to convert.
+- **Examples**:
+  ```jinja
+  {# Numeric string - works #}
+  {{ '100' | int }}  --> 100
+  
+  {# Non-numeric string - error or default #}
+  {{ 'abc' | int }}  --> Error OR 0 (depending on Jinja version)
+  
+  {# Empty string #}
+  {{ '' | int }}  --> 0
+  
+  {# String with whitespace #}
+  {{ '  100  ' | int }}  --> 100 (trims whitespace)
+  ```
+- **Safe conversion with default**:
+  - Use `| int(default=0)` to provide a default fallback:
+    ```jinja
+    {{ 'abc' | int(default=0) }}  --> 0
+    {{ '100' | int(default=0) }}  --> 100
+    ```
+- **Handling in dbt macros**:
+  - **Unsafe** (can error):
+    ```jinja
+    {% macro add(col1, col2) %}
+        {{ col1 | int }} + {{ col2 | int }}
+    {% endmacro %}
+    ```
+  - **Safe** (with default fallback):
+    ```jinja
+    {% macro add(col1, col2) %}
+        {{ col1 | int(default=0) }} + {{ col2 | int(default=0) }}
+    {% endmacro %}
+    ```
+  - **Safest** (with null and error handling):
+    ```jinja
+    {% macro add(col1, col2) %}
+        {% set c1 = col1 | int(default=0) if col1 is not none else 0 %}
+        {% set c2 = col2 | int(default=0) if col2 is not none else 0 %}
+        {{ c1 }} + {{ c2 }}
+    {% endmacro %}
+    ```
+- **Real-world impact**:
+  - If a column value is NULL or contains 'N/A', your macro will fail unless you handle it.
+  - Always add error handling for user-provided or source data.
+- **Testing**:
+  - Test your macros with edge cases: NULL, empty strings, non-numeric values.
+  - Use `dbt compile` or `dbt run` to check for Jinja errors.
+- **Interview Cross-Questions**:
+  - What happens if you use `| int` on a NULL value?
+  - How do you provide a default value for failed type conversions?
+  - What's the difference between `| int` and `| int(default=0)` in Jinja?
+  - When would silent conversion to 0 be dangerous in a data pipeline?
+  - How do you validate input types in dbt macros before converting?
+
+### Question 25: How to run only a single model in dbt?
+- **Question**: How to run only a single model in dbt?
+- **Context**: Running specific dbt models during development, testing, or debugging without running the entire project.
+- **Answer**:
+  - Use the `--models` (or `-m`) flag with `dbt run` to select specific models.
+  - dbt will automatically run the selected model's dependencies (upstream models) unless you disable that.
+- **Basic Command**:
+  ```bash
+  dbt run --models model_name
+  # or shorter
+  dbt run -m model_name
+  ```
+- **Examples**:
+  - **Run a single model by name**:
+    ```bash
+    dbt run --models bronze_bookings
+    ```
+    - This runs `bronze_bookings.sql` and all its dependencies (e.g., the source it references).
+  
+  - **Run a model in a specific folder**:
+    ```bash
+    dbt run --models bronze  # Runs all bronze models
+    dbt run --models silver.silver_listings  # Runs specific model with folder path
+    ```
+  
+  - **Run a model without dependencies** (new in dbt v0.20+):
+    ```bash
+    dbt run --models bronze_bookings --exclude-dependencies
+    ```
+    - Runs only the selected model, skipping upstream dependencies.
+  
+  - **Run multiple models** (comma-separated or multiple -m flags):
+    ```bash
+    dbt run --models bronze_bookings,bronze_listings
+    dbt run -m bronze_bookings -m bronze_listings
+    ```
+  
+  - **Run with tag selector**:
+    ```bash
+    dbt run --models tag:daily
+    ```
+    - Runs all models tagged with 'daily' in their config.
+  
+  - **Run model and its downstream dependents**:
+    ```bash
+    dbt run --models bronze_bookings+
+    ```
+    - The `+` means "and all models that depend on this model".
+  
+  - **Run model and upstream** (full lineage):
+    ```bash
+    dbt run --models +bronze_bookings+
+    ```
+    - Runs bronze_bookings and all models it depends on, plus all downstream models.
+- **Common Development Workflows**:
+  - **Quick test of a single model**:
+    ```bash
+    dbt run --models my_new_model --exclude-dependencies
+    dbt docs generate
+    ```
+  
+  - **Test after changes to a source**:
+    ```bash
+    dbt run --models source:staging  # Runs models using staging source
+    ```
+  
+  - **Test a model and its downstream**:
+    ```bash
+    dbt run --models silver_bookings+
+    ```
+- **Useful flags with single model runs**:
+  - `--exclude-dependencies`: Skip running upstream models.
+  - `--full-refresh`: Force a full refresh (useful for incremental models).
+  - `--debug`: Show detailed execution logs.
+  - `--fail-fast`: Stop on first error.
+  - `--select` (alias for `--models`): Alternative syntax.
+- **Interview Cross-Questions**:
+  - What's the difference between `dbt run -m model` and `dbt run -m model+`?
+  - How do you run a model without its dependencies?
+  - What does the `+` selector mean in dbt?
+  - When would you use tags to select models instead of specific names?
+  - How do you test a single incremental model with full refresh?
+
+### Question 26: What are dbt-utils?
+- **Question**: What are dbt-utils?
+- **Context**: Understanding the dbt-utils package, a collection of reusable macros and tests that enhance dbt functionality.
+- **Answer**:
+  - **dbt-utils** is a package of reusable Jinja macros and SQL functions maintained by the dbt community that extend dbt's capabilities.
+  - It provides common data transformations, tests, and utilities that would otherwise require custom macro writing.
+  - Must be installed as a dependency in your `packages.yml` file.
+- **Installation**:
+  - Add to `packages.yml`:
+    ```yaml
+    packages:
+      - package: dbt-labs/dbt_utils
+        version: 1.1.1  # Use latest stable version
+    ```
+  - Run:
+    ```bash
+    dbt deps
+    ```
+- **Common dbt-utils macros**:
+  1. **`surrogate_key(column_list)`** - Generate a surrogate key by hashing column values:
+     ```sql
+     SELECT
+       {{ dbt_utils.surrogate_key(['id', 'source']) }} as key,
+       name, price
+     FROM {{ ref('bookings') }}
+     ```
+  
+  2. **`star(from, except=[])`** - Select all columns except specified ones:
+     ```sql
+     SELECT
+       {{ dbt_utils.star(ref('bronze_listings'), except=['sensitive_col', 'internal_id']) }}
+     FROM {{ ref('bronze_listings') }}
+     ```
+  
+  3. **`get_column_values(table, column)`** - Get distinct values from a column (useful for dynamic filtering):
+     ```jinja
+     {% set status_values = dbt_utils.get_column_values(table=ref('bookings'), column='status') %}
+     SELECT * FROM {{ ref('bookings') }}
+     WHERE status IN ({{ status_values | join(', ') }})
+     ```
+  
+  4. **`group_by(n)`** - Group by first N columns (useful when you have many columns):
+     ```sql
+     SELECT col1, col2, col3, COUNT(*) as cnt
+     FROM {{ ref('listings') }}
+     GROUP BY {{ dbt_utils.group_by(3) }}
+     ```
+  
+  5. **`unpivot()`** - Convert columns to rows (pivot longer):
+     ```sql
+     SELECT *
+     FROM {{ dbt_utils.unpivot(
+       relation=ref('sales_wide'),
+       cast_to='string',
+       exclude=['year', 'quarter'],
+       field_name='metric',
+       value_name='amount'
+     ) }}
+     ```
+  
+  6. **`generate_series(start, end)`** - Generate a series of numbers or dates:
+     ```sql
+     SELECT {{ dbt_utils.generate_series(1, 100) }} as num
+     ```
+  
+  7. **`safe_cast(column, type)`** - Safely cast without errors on invalid values:
+     ```sql
+     SELECT
+       {{ dbt_utils.safe_cast('price', api.Column.String) }} as price_str
+     FROM {{ ref('listings') }}
+     ```
+- **Common dbt-utils tests**:
+  - `dbt_utils.equality_test`: Compares two model outputs.
+  - `dbt_utils.expression_is_true`: Validates a SQL expression.
+  - `dbt_utils.recency`: Checks if data is recent (no stale data).
+- **Example: Using star() with except in a model**:
+  ```sql
+  {{ config(materialized='table') }}
+
+  SELECT
+    {{ dbt_utils.star(ref('bronze_bookings'), except=['internal_id', 'test_col']) }},
+    CURRENT_TIMESTAMP() as dbt_load_time
+  FROM {{ ref('bronze_bookings') }}
+  ```
+- **Why use dbt-utils**:
+  - Saves time writing common transformations.
+  - Provides best practices and tested code.
+  - Reduces code duplication across models.
+  - Makes code more maintainable and readable.
+- **Interview Cross-Questions**:
+  - How do you install and use dbt-utils in your project?
+  - When would you use `surrogate_key()` vs a natural key?
+  - What's the difference between `star()` and `select *`?
+  - How does `unpivot()` differ from `pivot()`?
+  - What are common dbt-utils tests and how do you use them?
+
+### Question 27: What are metadata-driven pipelines?
+- **Question**: What are metadata-driven pipelines?
+- **Context**: Understanding a design pattern where pipeline behavior is controlled by metadata rather than hardcoded logic, enabling scalability and flexibility in data engineering.
+- **Answer**:
+  - **Metadata-driven pipelines** are data pipelines where the transformation logic and execution behavior are controlled by metadata (configuration, usually in YAML, JSON, or CSV) rather than hardcoded code.
+  - Instead of writing separate transformation logic for each table, you define metadata that describes how data should flow and be transformed.
+  - The pipeline engine reads the metadata and executes transformations dynamically.
+- **Key Concept**:
+  - Traditional approach: Hard-code each model separately in SQL.
+  - Metadata-driven approach: Define metadata once, apply to multiple tables or scenarios.
+- **Benefits**:
+  - **Scalability**: Add new data sources without writing new code.
+  - **Reduced code duplication**: Reuse transformation patterns.
+  - **Easier maintenance**: Update rules in one place.
+  - **Lower learning curve**: Non-technical users can manage pipelines via metadata.
+  - **Consistency**: Ensures uniform handling of similar data types.
+- **Example: dbt-based metadata-driven pipeline**:
+  - **Metadata YAML** (centralizes transformation rules):
+    ```yaml
+    tables:
+      - name: bookings
+        source: staging
+        materialization: incremental
+        unique_key: booking_id
+        incremental_column: created_at
+        exclude_columns: [internal_id, test_col]
+        
+      - name: listings
+        source: staging
+        materialization: table
+        exclude_columns: [sensitive_data]
+      
+      - name: reviews
+        source: staging
+        materialization: incremental
+        unique_key: review_id
+        incremental_column: updated_at
+    ```
+  
+  - **Generic Jinja macro** (processes any table based on metadata):
+    ```jinja
+    {% macro generate_model_from_metadata(table_config) %}
+      {{ config(
+        materialized=table_config.materialization,
+        unique_key=table_config.unique_key if table_config.materialization == 'incremental' else none
+      ) }}
+
+      SELECT
+        {{ dbt_utils.star(
+          from=source(table_config.source, table_config.name),
+          except=table_config.exclude_columns
+        ) }}
+      FROM {{ source(table_config.source, table_config.name) }}
+      
+      {% if table_config.materialization == 'incremental' %}
+        WHERE {{ table_config.incremental_column }} >= (
+          SELECT COALESCE(MAX({{ table_config.incremental_column }}), '1900-01-01'::timestamp)
+          FROM {{ this }}
+        )
+      {% endif %}
+    {% endmacro %}
+    ```
+  
+  - **Model file** (uses macro with metadata):
+    ```sql
+    {%- set table_config = {
+      'name': 'bookings',
+      'source': 'staging',
+      'materialization': 'incremental',
+      'unique_key': 'booking_id',
+      'incremental_column': 'created_at',
+      'exclude_columns': ['internal_id', 'test_col']
+    } -%}
+
+    {{ generate_model_from_metadata(table_config) }}
+    ```
+- **Real-world example**:
+  - **Without metadata-driven**: Write 50 similar models for 50 tables.
+  - **With metadata-driven**: Write 1 generic macro + 50 lightweight model files that call it with different configs.
+- **Metadata sources**:
+  - YAML files (dbt sources, properties).
+  - CSV/JSON configuration files.
+  - Database tables (audit tables with transformation rules).
+  - Environment variables.
+- **Advanced use cases**:
+  - Dynamic model generation: Create models at runtime based on metadata.
+  - Automation of bronze/silver layer: Auto-generate bronze models from source definitions.
+  - Testing rules: Define test expectations as metadata.
+  - Data quality checks: Store thresholds and validation rules in metadata.
+- **Challenges**:
+  - Requires careful metadata design upfront.
+  - Debugging is harder when logic is abstracted.
+  - Not suitable for highly custom transformations.
+- **Interview Cross-Questions**:
+  - What's the difference between metadata-driven and code-driven pipelines?
+  - When would you use metadata-driven pipelines vs hardcoded models?
+  - How do you manage metadata versions in a metadata-driven pipeline?
+  - What tools support metadata-driven data pipelines?
+  - How do you debug issues in a metadata-driven pipeline?
+
+### Question 28: What are snapshots in dbt?
+- **Question**: What are snapshots?
+- **Context**: Understanding dbt snapshots for capturing and tracking historical state changes in slowly changing dimensions (SCD Type 2).
+- **Answer**:
+  - **Snapshots** are a dbt feature that records the history of records over time by capturing their state at specific points.
+  - They track changes to dimension records (e.g., when a customer's address or status changes).
+  - Snapshots create a Type 2 Slowly Changing Dimension (SCD) table with effective and expiration dates.
+  - Unlike incremental models that append only new records, snapshots track row-level changes.
+- **Why snapshots matter**:
+  - Track historical data for compliance and auditing.
+  - Enable temporal queries (e.g., "what was the customer's address on 2025-01-15?").
+  - Create a complete audit trail of dimension changes.
+- **How snapshots work**:
+  1. dbt compares source records with the previous snapshot state.
+  2. Records that changed get a new version with updated `dbt_valid_from` and `dbt_valid_to` dates.
+  3. Unchanged records are carried forward unchanged.
+  4. Only changed records are inserted (efficient incremental approach).
+- **Snapshot syntax**:
+  ```sql
+  {% snapshot snapshot_name %}
+    {{
+      config(
+        target_schema='snapshots',
+        unique_key='id',
+        strategy='timestamp',
+        updated_at='updated_at'
+      )
+    }}
+
+    SELECT id, name, email, address, updated_at
+    FROM {{ source('raw', 'customers') }}
+
+  {% endsnapshot %}
+  ```
+- **Key parameters**:
+  - `unique_key`: Column(s) that uniquely identify a record.
+  - `strategy`: How to detect changes: `timestamp` or `check`.
+  - `updated_at`: Timestamp column (for `timestamp` strategy).
+  - `check_cols`: Columns to monitor for changes (for `check` strategy).
+  - `target_schema`: Where to store snapshot tables.
+- **Strategies**:
+  1. **Timestamp strategy** (recommended):
+     ```sql
+     {{
+       config(
+         target_schema='snapshots',
+         unique_key='customer_id',
+         strategy='timestamp',
+         updated_at='last_modified'
+       )
+     }}
+
+     SELECT * FROM {{ source('raw', 'customers') }}
+     ```
+     - dbt compares the `last_modified` timestamp with the previous snapshot.
+     - Simple and efficient for sources that have an `updated_at` column.
+
+  2. **Check strategy** (all columns or specific ones):
+     ```sql
+     {{
+       config(
+         target_schema='snapshots',
+         unique_key='customer_id',
+         strategy='check',
+         check_cols=['name', 'email', 'address']
+       )
+     }}
+
+     SELECT * FROM {{ source('raw', 'customers') }}
+     ```
+     - dbt hashes the specified columns and compares hashes.
+     - Use when no timestamp column exists.
+- **Snapshot output columns**:
+  - All source columns.
+  - `dbt_valid_from`: When this version became valid.
+  - `dbt_valid_to`: When this version expired (NULL for current version).
+  - `dbt_scd_id`: Unique identifier for each version.
+  - `dbt_updated_at`: Timestamp of snapshot run.
+- **Example: Tracking customer changes**:
+  - **Snapshot file** (`snapshots/customers_snapshot.sql`):
+    ```sql
+    {% snapshot customers_snapshot %}
+      {{
+        config(
+          target_schema='snapshots',
+          unique_key='customer_id',
+          strategy='timestamp',
+          updated_at='updated_at'
+        )
+      }}
+
+      SELECT
+        customer_id,
+        name,
+        email,
+        address,
+        status,
+        updated_at
+      FROM {{ source('raw', 'customers') }}
+    {% endsnapshot %}
+    ```
+
+  - **Using snapshot in downstream model**:
+    ```sql
+    SELECT
+      customer_id,
+      name,
+      address,
+      dbt_valid_from,
+      dbt_valid_to,
+      CASE
+        WHEN dbt_valid_to IS NULL THEN 'Current'
+        ELSE 'Historical'
+      END as record_status
+    FROM {{ ref('customers_snapshot') }}
+    ORDER BY customer_id, dbt_valid_from DESC
+    ```
+
+  - **Temporal query** (address on specific date):
+    ```sql
+    SELECT
+      customer_id,
+      name,
+      address
+    FROM {{ ref('customers_snapshot') }}
+    WHERE dbt_valid_from <= '2025-01-15'::date
+      AND (dbt_valid_to IS NULL OR dbt_valid_to > '2025-01-15'::date)
+    ```
+- **Running snapshots**:
+  ```bash
+  dbt snapshot                    # Run all snapshots
+  dbt snapshot -m customers_snapshot  # Run specific snapshot
+  dbt snapshot --full-refresh    # Rebuild entire snapshot table
+  ```
+- **Best practices**:
+  - Use `timestamp` strategy when available (more efficient).
+  - Snapshot dimension tables, not facts (facts are append-only).
+  - Run snapshots regularly (daily recommended).
+  - Document what changes you're tracking.
+  - Use snapshots for SCD Type 2 scenarios.
+- **Limitations**:
+  - Snapshots only track row changes, not column additions/removals.
+  - Not ideal for high-volume fact tables (too many rows to snapshot).
+  - Requires unique key to identify records.
+- **Interview Cross-Questions**:
+  - What's the difference between snapshots and incremental models?
+  - When would you use timestamp strategy vs check strategy?
+  - How do you query a snapshot to get data from a specific point in time?
+  - What's the difference between SCD Type 1 and Type 2?
+  - Can you snapshot a fact table? Why or why not?
+
+### Question 29: What are ephemeral models in dbt?
+- **Question**: What are ephemeral models in dbt?
+- **Context**: Understanding ephemeral materialization for creating reusable logic without materializing intermediate tables/views in the database.
+- **Answer**:
+  - **Ephemeral models** are dbt models that are NOT materialized as tables or views in the database.
+  - Instead, they exist only as CTEs (Common Table Expressions) that are inlined into dependent models.
+  - They are like helper or intermediate logic that gets compiled into the SQL of downstream models.
+  - Useful for code reuse without cluttering the database with intermediate tables.
+- **When to use ephemeral models**:
+  - Shared logic that multiple models depend on but don't need to persist.
+  - Intermediate calculations or transformations.
+  - Staging/cleaning logic that feeds directly into final models.
+  - To reduce database objects and improve query performance.
+- **Syntax**:
+  ```sql
+  {{ config(materialized='ephemeral') }}
+
+  SELECT
+    id,
+    name,
+    UPPER(city) as city,
+    price * 1.1 as price_with_tax
+  FROM {{ source('raw', 'listings') }}
+  ```
+- **Example workflow**:
+  - **Ephemeral model** (`stg_listings.sql`):
+    ```sql
+    {{ config(materialized='ephemeral') }}
+
+    SELECT
+      id,
+      name,
+      UPPER(city) as city,
+      price,
+      created_at
+    FROM {{ source('raw', 'listings') }}
+    WHERE created_at IS NOT NULL
+    ```
+
+  - **Downstream model** (`dim_listings.sql`):
+    ```sql
+    {{ config(materialized='table') }}
+
+    SELECT
+      id,
+      name,
+      city,
+      price,
+      created_at,
+      CURRENT_TIMESTAMP() as load_time
+    FROM {{ ref('stg_listings') }}
+    WHERE price > 100
+    ```
+
+  - **Compiled SQL** (what dbt actually runs in Snowflake):
+    ```sql
+    CREATE TABLE dim_listings AS
+    WITH stg_listings AS (
+      SELECT
+        id,
+        name,
+        UPPER(city) as city,
+        price,
+        created_at
+      FROM raw.listings
+      WHERE created_at IS NOT NULL
+    )
+    SELECT
+      id,
+      name,
+      city,
+      price,
+      created_at,
+      CURRENT_TIMESTAMP() as load_time
+    FROM stg_listings
+    WHERE price > 100
+    ```
+- **Key difference from table/view**:
+  - **Table**: Created and stored in database, slower for small datasets.
+  - **View**: Created in database, executable separately, less performant if chain of views.
+  - **Ephemeral**: NOT created in database, inlined as CTE, more performant for small logic.
+- **Advantages**:
+  - **No database clutter**: Intermediate tables/views not created.
+  - **Better performance**: CTEs are optimized by the database engine.
+  - **Code reuse**: Share logic across models without materializing.
+  - **Lower storage**: No persistence needed for temporary logic.
+- **Disadvantages**:
+  - **Can't be queried directly**: Ephemeral models don't exist in the database to query independently.
+  - **Scalability**: For complex logic used by many models, materializing might be better.
+  - **Testing**: Harder to test ephemeral models independently (no table to query).
+- **Best practices**:
+  - Use ephemeral for simple, lightweight transformations.
+  - Use tables for logic that is reused by many downstream models (avoid recompiling).
+  - Use views when you need the object to be queryable but don't need persistence.
+  - Start with ephemeral; materialize to table only if performance analysis shows it's needed.
+- **Real-world example**:
+  ```sql
+  {# Ephemeral: Staging model for data cleaning #}
+  {{ config(materialized='ephemeral') }}
+  
+  SELECT
+    booking_id,
+    guest_id,
+    COALESCE(price, 0) as price,
+    CASE WHEN status IN ('confirmed', 'completed') THEN status ELSE 'unknown' END as status,
+    created_at
+  FROM {{ source('staging', 'bookings') }}
+  WHERE created_at >= '2025-01-01'
+
+  {# Table: Fact model that uses the ephemeral staging #}
+  {{ config(materialized='table') }}
+  
+  SELECT
+    booking_id,
+    guest_id,
+    price,
+    status,
+    created_at,
+    CURRENT_DATE() as load_date
+  FROM {{ ref('stg_bookings') }}  {# Ephemeral model is inlined here #}
+  ```
+- **Checking materialization type**:
+  - Use `{{ this.type }}` in a model to see its materialization.
+  - Ephemeral models will show as 'ephemeral' (not materialized).
+- **When to NOT use ephemeral**:
+  - For models that are queried frequently by analysts (they won't exist).
+  - For performance-critical logic used by many downstream models (materialize to avoid recompiling).
+  - For models that need to be tested or validated independently.
+- **Materialization hierarchy** (from most to least persistent):
+  - **table**: Materialized, stored, queryable, high storage cost.
+  - **view**: Not stored, queryable, recomputed on each query.
+  - **incremental**: Like table but only new/changed rows (most efficient for large data).
+  - **ephemeral**: Not materialized, inlined as CTE, lowest storage, only used internally.
+- **Interview Cross-Questions**:
+  - What's the difference between ephemeral and view materialization?
+  - Why would you use ephemeral instead of a table or view?
+  - Can you query an ephemeral model directly? Why or why not?
+  - When should you materialize an ephemeral model to a table?
+  - How does dbt compile ephemeral models?
+
+### Question 30: How can snapshots be used with YAML and macros?
+- **Question**: How can snapshots be used using YAML and macros?
+- **Context**: Implementing metadata-driven snapshots using YAML configuration and generic macros for scalable dimension tracking.
+- **Answer**:
+  - Instead of writing individual snapshot files for each dimension, you can define snapshot metadata in YAML and use a generic macro to generate snapshots.
+  - This approach scales well when you have many dimension tables to snapshot.
+  - Combines metadata-driven pipelines with snapshots for maximum reusability.
+- **Architecture**:
+  1. Define snapshot metadata in a YAML file (table names, unique keys, strategies, etc.).
+  2. Create a generic macro that reads metadata and generates snapshot SQL.
+  3. Snapshot files call the macro with different metadata configs.
+- **Step 1: Define snapshot metadata in YAML**:
+  - Create `snapshots_config.yml` (or similar):
+    ```yaml
+    snapshots:
+      - name: customers_snapshot
+        source_table: customers
+        source_name: raw
+        target_schema: snapshots
+        unique_key: customer_id
+        strategy: timestamp
+        updated_at_column: updated_at
+        description: "Tracks customer profile changes"
+        
+      - name: listings_snapshot
+        source_table: listings
+        source_name: raw
+        target_schema: snapshots
+        unique_key: listing_id
+        strategy: check
+        check_cols: [name, host_id, price, address]
+        description: "Tracks listing changes"
+        
+      - name: hosts_snapshot
+        source_table: hosts
+        source_name: raw
+        target_schema: snapshots
+        unique_key: host_id
+        strategy: timestamp
+        updated_at_column: updated_at
+        description: "Tracks host profile changes"
+    ```
+
+- **Step 2: Create a generic macro for snapshots**:
+  - Create `macros/generate_snapshot.sql`:
+    ```jinja
+    {% macro generate_snapshot_from_metadata(snapshot_config) %}
+      {%- set strategy_config = {
+        'target_schema': snapshot_config.target_schema,
+        'unique_key': snapshot_config.unique_key,
+        'strategy': snapshot_config.strategy
+      } -%}
+
+      {%- if snapshot_config.strategy == 'timestamp' -%}
+        {%- set strategy_config = strategy_config | combine({'updated_at': snapshot_config.updated_at_column}) -%}
+      {%- elif snapshot_config.strategy == 'check' -%}
+        {%- set strategy_config = strategy_config | combine({'check_cols': snapshot_config.check_cols}) -%}
+      {%- endif -%}
+
+      {{
+        config(**strategy_config)
+      }}
+
+      SELECT *
+      FROM {{ source(snapshot_config.source_name, snapshot_config.source_table) }}
+    {% endmacro %}
+    ```
+
+- **Step 3: Create snapshot files using the macro**:
+  - Create `snapshots/customers_snapshot.sql`:
+    ```sql
+    {%- set snapshot_config = {
+      'name': 'customers_snapshot',
+      'source_table': 'customers',
+      'source_name': 'raw',
+      'target_schema': 'snapshots',
+      'unique_key': 'customer_id',
+      'strategy': 'timestamp',
+      'updated_at_column': 'updated_at'
+    } -%}
+
+    {% snapshot customers_snapshot %}
+      {{ generate_snapshot_from_metadata(snapshot_config) }}
+    {% endsnapshot %}
+    ```
+
+  - Create `snapshots/listings_snapshot.sql`:
+    ```sql
+    {%- set snapshot_config = {
+      'name': 'listings_snapshot',
+      'source_table': 'listings',
+      'source_name': 'raw',
+      'target_schema': 'snapshots',
+      'unique_key': 'listing_id',
+      'strategy': 'check',
+      'check_cols': ['name', 'host_id', 'price', 'address']
+    } -%}
+
+    {% snapshot listings_snapshot %}
+      {{ generate_snapshot_from_metadata(snapshot_config) }}
+    {% endsnapshot %}
+    ```
+
+- **Advanced: Loading metadata from external YAML**:
+  - Use dbt's `var()` to pass metadata:
+    ```sql
+    {%- set all_snapshots = var('snapshots_config') -%}
+    {%- set snapshot_config = all_snapshots | selectattr('name', 'equalto', 'customers_snapshot') | list | first -%}
+
+    {% snapshot customers_snapshot %}
+      {{ generate_snapshot_from_metadata(snapshot_config) }}
+    {% endsnapshot %}
+    ```
+
+  - Pass via `--vars` or `dbt_project.yml`:
+    ```yaml
+    vars:
+      snapshots_config:
+        - name: customers_snapshot
+          source_table: customers
+          source_name: raw
+          unique_key: customer_id
+          strategy: timestamp
+          updated_at_column: updated_at
+        
+        - name: listings_snapshot
+          source_table: listings
+          source_name: raw
+          unique_key: listing_id
+          strategy: check
+          check_cols: [name, host_id, price]
+    ```
+
+- **Benefits of YAML + Macro approach**:
+  - **DRY principle**: Define snapshot logic once, reuse across tables.
+  - **Easy maintenance**: Update rules in YAML, not in individual SQL files.
+  - **Scalability**: Add 100 new snapshots by just adding 100 lines to YAML.
+  - **Consistency**: All snapshots follow the same pattern.
+  - **Documentation**: Metadata serves as documentation.
+
+- **Example: Full workflow**:
+  1. Add new dimension to snapshot metadata in YAML:
+     ```yaml
+     - name: bookings_snapshot
+       source_table: bookings
+       source_name: raw
+       unique_key: booking_id
+       strategy: timestamp
+       updated_at_column: updated_at
+     ```
+  
+  2. Create minimal snapshot file:
+     ```sql
+     {%- set cfg = var('snapshots_config') | selectattr('name', 'equalto', 'bookings_snapshot') | list | first -%}
+     {% snapshot bookings_snapshot %}
+       {{ generate_snapshot_from_metadata(cfg) }}
+     {% endsnapshot %}
+     ```
+  
+  3. Run snapshot:
+     ```bash
+     dbt snapshot
+     ```
+
+- **Advanced macro with validation**:
+  ```jinja
+  {% macro generate_snapshot_from_metadata(config) %}
+    {%- if config.unique_key is not defined -%}
+      {{ exceptions.raise_compiler_error("Snapshot config missing unique_key: " ~ config.name) }}
+    {%- endif -%}
+
+    {%- if config.strategy not in ['timestamp', 'check'] -%}
+      {{ exceptions.raise_compiler_error("Invalid strategy: " ~ config.strategy) }}
+    {%- endif -%}
+
+    {%- set strategy_config = {
+      'target_schema': config.target_schema or 'snapshots',
+      'unique_key': config.unique_key,
+      'strategy': config.strategy
+    } -%}
+
+    {%- if config.strategy == 'timestamp' -%}
+      {%- if config.updated_at_column is not defined -%}
+        {{ exceptions.raise_compiler_error("Timestamp strategy requires updated_at_column") }}
+      {%- endif -%}
+      {%- set strategy_config = strategy_config | combine({'updated_at': config.updated_at_column}) -%}
+    {%- endif -%}
+
+    {{ config(**strategy_config) }}
+    SELECT * FROM {{ source(config.source_name, config.source_table) }}
+  {% endmacro %}
+  ```
+
+- **Interview Cross-Questions**:
+  - Why combine YAML and macros for snapshots?
+  - How do you validate snapshot metadata in a macro?
+  - When would you hardcode snapshots vs use metadata-driven approach?
+  - How do you handle different snapshot strategies in a generic macro?
+  - Can you use Jinja loops to generate multiple snapshots from YAML metadata?
+
+### Question 31: What is seeding in dbt?
+- **Question**: What is seeding in dbt?
+- **Context**: Understanding dbt seed files, which load static CSV data into the warehouse as tables.
+- **Answer**:
+  - **Seeding** is the process of loading CSV files from your dbt project's `data/` directory into your data warehouse as tables.
+  - Seed files are treated as source data that dbt manages alongside your models.
+  - Use seeds for small reference datasets, lookup tables, configuration data, or static lists that your models need.
+- **How seeding works**:
+  1. Place CSV files in the `data/` folder of your dbt project.
+  2. Define seed configuration in `dbt_project.yml` if you need custom settings.
+  3. Run `dbt seed` to load the CSV files into your warehouse.
+  4. Reference seed tables in models using `{{ ref('seed_name') }}`.
+- **Basic command**:
+  ```bash
+  dbt seed
+  ```
+- **Run a single seed file**:
+  ```bash
+  dbt seed --select my_seed_file
+  ```
+- **Example CSV** (`data/country_codes.csv`):
+  ```csv
+  country_code,country_name,continent
+  US,United States,North America
+  IN,India,Asia
+  GB,United Kingdom,Europe
+  ```
+- **Example model using seed**:
+  ```sql
+  SELECT
+    b.booking_id,
+    b.country_code,
+    s.country_name,
+    s.continent
+  FROM {{ ref('bronze_bookings') }} b
+  LEFT JOIN {{ ref('country_codes') }} s
+    ON b.country_code = s.country_code
+  ```
+- **Seed configuration in `dbt_project.yml`**:
+  ```yaml
+  seeds:
+    my_project:
+      country_codes:
+        file: data/country_codes.csv
+        quote_columns: false
+        header: true
+        delimiter: ','
+      +column_types:
+        country_code: varchar
+        country_name: varchar
+        continent: varchar
+  ```
+- **Why use seeds**:
+  - Load tiny, static datasets without building a full extraction pipeline.
+  - Store lookup tables, country codes, type mappings, or default values.
+  - Keep reference data version-controlled in the dbt repo.
+- **Best practices**:
+  - Use seeds only for small, stable datasets.
+  - Avoid large CSVs; prefer raw source tables for heavy data.
+  - Configure column types if you need strict schema control.
+  - Document seed contents and intended use.
+- **Interview Cross-Questions**:
+  - What is the difference between seeds and sources in dbt?
+  - When should you use a seed file versus a regular model?
+  - How do you configure seed column types in dbt?
+  - Can you use `dbt seed` in a production workflow?
+  - How do you version-control seed data?
+
+### Question 32: What are tags in tests?
+- **Question**: What are tags in test?
+- **Context**: Understanding how dbt tags are used to organize and execute tests selectively.
+- **Answer**:
+  - In dbt, **tags** are metadata labels you can attach to models, tests, seeds, snapshots, and macros.
+  - For tests, tags allow you to group tests by purpose, severity, team, data domain, or release wave.
+  - Tags make it easy to run only a subset of tests instead of all tests in the project.
+- **How tags work with tests**:
+  - Add tags in YAML test definitions or model config blocks.
+  - Run tests by tag using the `--select` or `--models` flag with `tag:` selector.
+- **Example: Tagging tests in YAML**:
+  ```yaml
+  models:
+    - name: bronze_bookings
+      columns:
+        - name: booking_id
+          tests:
+            - not_null:
+                tags: ['critical', 'booking']
+            - unique:
+                tags: ['critical', 'booking']
+        - name: created_at
+          tests:
+            - not_null:
+                tags: ['timestamp', 'bronze']
+  ```
+- **Example: Tagging generic tests**:
+  ```yaml
+  tests:
+    - dbt_utils.expression_is_true:
+        args:
+          expression: "status IN ('confirmed', 'cancelled', 'pending')"
+        tags: ['business-rule', 'booking']
+  ```
+- **Running tests by tag**:
+  ```bash
+  dbt test --select tag:critical
+  dbt test --select tag:booking
+  dbt test --select tag:business-rule
+  ```
+- **Benefits**:
+  - **Selective execution**: Run only high-priority or domain-specific tests.
+  - **Faster CI**: Run critical tags on every PR and full test suite nightly.
+  - **Better organization**: Group tests by team, data domain, or test type.
+  - **Easier debugging**: Isolate a failing tag group rather than all tests.
+- **Tagging in model config**:
+  - You can also add tags at the model level, and tests inherit them.
+    ```yaml
+    models:
+      - name: bronze_bookings
+        tags: ['bronze', 'booking']
+    ```
+  - Then running `dbt test --select tag:booking` includes tests on that model.
+- **Interview Cross-Questions**:
+  - How do you use tags to structure test execution in CI?
+  - What is the difference between model tags and test tags?
+  - Can tags be used with `dbt run` as well as `dbt test`?
+  - When would you tag a test as `critical` vs `optional`?
+  - How do tags help in maintaining a large dbt project?
