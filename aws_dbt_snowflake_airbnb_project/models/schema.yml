@@ -1,0 +1,36 @@
+version: 2
+
+models:
+  - name: silver_bookings
+    description: "Customer staging table"
+    columns:
+      - name: booking_id
+        description: "Unique identifier for each booking"
+        tests:
+          - not_null:
+              tags: [critical]
+          - unique:
+              tags: [critical]
+
+
+  - name: silver_listings
+    description: "Customer staging table"
+    columns:
+      - name: listing_id
+        description: "Unique identifier for each booking"
+        tests:
+          - not_null:
+              tags: [critical]
+          - unique:
+              tags: [critical]
+
+  - name: silver_hosts
+    description: "Customer staging table"
+    columns:
+      - name: host_id
+        description: "Unique identifier for each listings"
+        tests:
+          - not_null:
+              tags: [critical]
+          - unique:
+              tags: [critical]
